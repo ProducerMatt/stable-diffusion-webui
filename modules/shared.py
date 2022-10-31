@@ -14,7 +14,7 @@ import modules.memmon
 import modules.sd_models
 import modules.styles
 import modules.devices as devices
-from modules import sd_samplers, sd_models, localization
+from modules import sd_samplers, sd_models, localization, sd_vae
 from modules.hypernetworks import hypernetwork
 from modules.paths import models_path, script_path, sd_path
 
@@ -144,9 +144,38 @@ class State:
         self.sampling_step = 0
         self.current_image_sampling_step = 0
 
-    def get_job_timestamp(self):
-        return datetime.datetime.now().strftime("%Y%m%d%H%M%S")  # shouldn't this return job_timestamp?
+    def dict(self):
+        obj = {
+            "skipped": self.skipped,
+            "interrupted": self.skipped,
+            "job": self.job,
+            "job_count": self.job_count,
+            "job_no": self.job_no,
+            "sampling_step": self.sampling_step,
+            "sampling_steps": self.sampling_steps,
+        }
 
+        return obj
+
+    def begin(self):
+        self.sampling_step = 0
+        self.job_count = -1
+        self.job_no = 0
+        self.job_timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        self.current_latent = None
+        self.current_image = None
+        self.current_image_sampling_step = 0
+        self.skipped = False
+        self.interrupted = False
+        self.textinfo = None
+
+        devices.torch_gc()
+
+    def end(self):
+        self.job = ""
+        self.job_count = 0
+
+        devices.torch_gc()
 
 state = State()
 
@@ -267,6 +296,7 @@ options_templates.update(options_section(('training', "Training"), {
 options_templates.update(options_section(('sd', "Stable Diffusion"), {
     "sd_model_checkpoint": OptionInfo(None, "Stable Diffusion checkpoint", gr.Dropdown, lambda: {"choices": modules.sd_models.checkpoint_tiles()}, refresh=sd_models.list_models),
     "sd_checkpoint_cache": OptionInfo(0, "Checkpoints to cache in RAM", gr.Slider, {"minimum": 0, "maximum": 10, "step": 1}),
+    "sd_vae": OptionInfo("auto", "SD VAE", gr.Dropdown, lambda: {"choices": list(sd_vae.vae_list)}, refresh=sd_vae.refresh_vae_list),
     "sd_hypernetwork": OptionInfo("None", "Hypernetwork", gr.Dropdown, lambda: {"choices": ["None"] + [x for x in hypernetworks.keys()]}, refresh=reload_hypernetworks),
     "sd_hypernetwork_strength": OptionInfo(1.0, "Hypernetwork strength", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.001}),
     "inpainting_mask_weight": OptionInfo(1.0, "Inpainting conditioning mask strength", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.01}),
@@ -379,11 +409,12 @@ class Options:
         if bad_settings > 0:
             print(f"The program is likely to not work with bad settings.\nSettings file: {filename}\nEither fix the file, or delete it and restart.", file=sys.stderr)
 
-    def onchange(self, key, func):
+    def onchange(self, key, func, call=True):
         item = self.data_labels.get(key)
         item.onchange = func
 
-        func()
+        if call:
+            func()
 
     def dumpjson(self):
         d = {k: self.data.get(k, self.data_labels.get(k).default) for k in self.data_labels.keys()}
